@@ -6,6 +6,8 @@
 #include <QStandardPaths>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QFileInfo>
+#include <QDateTime>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -26,12 +28,23 @@ MainWindow::MainWindow(QWidget *parent)
     excelFilePath = docPath + "/BarangayAssistanceLog.xlsx";
 
     loadFromExcel();
+    sortTableByDateDescending();
 
-    // Connect double click edit
+    // Connect signals
     connect(ui->historyTable, &QTableView::doubleClicked, this, &MainWindow::on_historyTable_doubleClicked);
-
     connect(model, &QStandardItemModel::dataChanged, this, &MainWindow::onHistoryTableEdited);
+    connect(ui->refreshButton, &QPushButton::clicked, this, &MainWindow::on_refreshButton_clicked);
 
+    // Setup file watcher timer
+    fileWatcherTimer = new QTimer(this);
+    connect(fileWatcherTimer, &QTimer::timeout, this, &MainWindow::checkForExternalUpdates);
+    fileWatcherTimer->start(5000); // Check every 5 seconds
+
+    // Store initial modification time
+    QFileInfo fileInfo(excelFilePath);
+    if (fileInfo.exists()) {
+        lastModifiedTime = fileInfo.lastModified();
+    }
 }
 
 MainWindow::~MainWindow()
@@ -62,11 +75,10 @@ void MainWindow::on_submitButton_clicked()
              << new QStandardItem(purpose)
              << new QStandardItem(action);
 
-    model->appendRow(rowItems);
+    model->insertRow(0, rowItems); // Insert at top to maintain newest-first order
     saveToExcel();
 
     ui->statusbar->showMessage(QString("Record saved. Excel file updated at:\n%1").arg(excelFilePath), 7000);
-
 
     ui->nameEdit->clear();
     ui->barangayEdit->clear();
@@ -105,7 +117,11 @@ void MainWindow::saveToExcel()
         }
     }
 
-    xlsx.saveAs(excelFilePath);
+    if (xlsx.saveAs(excelFilePath)) {
+        // Update last modified time after saving
+        QFileInfo fileInfo(excelFilePath);
+        lastModifiedTime = fileInfo.lastModified();
+    }
 }
 
 void MainWindow::loadFromExcel()
@@ -114,6 +130,8 @@ void MainWindow::loadFromExcel()
         return;
 
     QXlsx::Document xlsx(excelFilePath);
+    model->removeRows(0, model->rowCount()); // Clear existing data
+
     int row = 2;
     while (!xlsx.read(row, 1).toString().isEmpty()) {
         QList<QStandardItem*> items;
@@ -123,6 +141,10 @@ void MainWindow::loadFromExcel()
         model->appendRow(items);
         row++;
     }
+
+    // Store last modified time after loading
+    QFileInfo fileInfo(excelFilePath);
+    lastModifiedTime = fileInfo.lastModified();
 }
 
 void MainWindow::onHistoryTableEdited(const QModelIndex &topLeft, const QModelIndex &bottomRight, const QVector<int> &roles)
@@ -135,4 +157,32 @@ void MainWindow::onHistoryTableEdited(const QModelIndex &topLeft, const QModelIn
 
     // also update Excel file to keep it in sync
     saveToExcel();
+}
+
+void MainWindow::on_refreshButton_clicked()
+{
+    loadFromExcel();
+    sortTableByDateDescending();
+    ui->statusbar->showMessage("Data refreshed from Excel file.", 3000);
+}
+
+void MainWindow::checkForExternalUpdates()
+{
+    if (!QFile::exists(excelFilePath))
+        return;
+
+    QFileInfo fileInfo(excelFilePath);
+    QDateTime currentModifiedTime = fileInfo.lastModified();
+
+    if (currentModifiedTime > lastModifiedTime) {
+        loadFromExcel();
+        sortTableByDateDescending();
+        lastModifiedTime = currentModifiedTime;
+        ui->statusbar->showMessage("Data automatically refreshed - external changes detected.", 3000);
+    }
+}
+
+void MainWindow::sortTableByDateDescending()
+{
+    model->sort(0, Qt::DescendingOrder); // Sort by date (column 0) in descending order
 }
